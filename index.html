@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swap with a person</title>
+<style>
+  :root{--fg:#141414;--dim:#6b6b6b;--line:#e3e3e3;--card:#fff;--bg:#fafafa;--ok:#16a34a;--no:#dc2626}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif}
+  .wrap{max-width:680px;margin:0 auto;padding:34px 20px 80px}
+  h1{font-size:27px;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}
+  .lede{color:var(--dim);margin:0 0 28px;font-size:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:0 0 16px}
+  h2{font-size:17px;margin:0 0 14px;font-weight:600}
+  label{display:block;font-size:13px;color:var(--dim);margin:0 0 5px}
+  input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:9px;font:inherit;font-size:16px;background:#fff;color:var(--fg)}
+  textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;min-height:110px;resize:vertical}
+  .row{display:flex;gap:12px}.row>div{flex:1}
+  button{font:inherit;font-size:16px;font-weight:550;padding:11px 18px;border-radius:9px;border:1px solid var(--fg);background:var(--fg);color:#fff;cursor:pointer;margin:14px 8px 0 0}
+  button.ghost{background:#fff;color:var(--fg)}
+  button:disabled{opacity:.4;cursor:default}
+  .msg{margin-top:14px;padding:11px 13px;border-radius:9px;font-size:15px;display:none}
+  .msg.show{display:block}
+  .msg.ok{background:#f0fdf4;color:#14532d}.msg.no{background:#fef2f2;color:#7f1d1d}.msg.info{background:#f5f5f5;color:var(--dim)}
+  ul.why{margin:8px 0 0;padding-left:20px;font-size:15px}
+  .offer{border:1px solid var(--line);border-radius:11px;padding:14px;margin:0 0 10px;background:#fff}
+  .offer .deal{font-size:17px;font-weight:600}
+  .offer .meta{font-size:13px;color:var(--dim);margin-top:3px}
+  .note{font-size:14px;color:var(--dim);margin-top:24px;border-top:1px solid var(--line);padding-top:18px}
+  .note b{color:var(--fg);font-weight:600}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--dim);word-break:break-all}
+</style></head>
+<body><div class="wrap">
+
+<h1>Swap with a person</h1>
+<p class="lede">You offer. They accept. Both sides move at once, or nothing moves.
+No account, no middleman, and your money stays yours until the moment of the swap.</p>
+
+<div class="card">
+  <h2>Make an offer</h2>
+  <div class="row">
+    <div><label>You send</label><div class="row">
+      <input id="giveAmt" value="1.00" inputmode="decimal">
+      <select id="giveTok"><option>USDC</option><option>EURC</option></select>
+    </div></div>
+    <div><label>You want</label><div class="row">
+      <input id="wantAmt" value="0.92" inputmode="decimal">
+      <select id="wantTok"><option selected>EURC</option><option>USDC</option></select>
+    </div></div>
+  </div>
+  <div style="margin-top:12px"><label>Good for</label>
+    <select id="expiry">
+      <option value="900">15 minutes</option>
+      <option value="3600" selected>1 hour</option>
+      <option value="21600">6 hours</option>
+    </select>
+  </div>
+  <button id="mk">Sign this offer</button>
+  <button id="cp" class="ghost" disabled>Copy it</button>
+  <div id="mkMsg" class="msg"></div>
+  <textarea id="mkOut" style="display:none;margin-top:12px" readonly></textarea>
+</div>
+
+<div class="card">
+  <h2>Take an offer</h2>
+  <label>Paste an offer someone sent you</label>
+  <textarea id="inOffer" placeholder="{ ... }"></textarea>
+  <button id="chk" class="ghost">Check it</button>
+  <button id="take" disabled>Accept and swap</button>
+  <div id="takeMsg" class="msg"></div>
+</div>
+
+<div class="card">
+  <h2>Offers going around</h2>
+  <div id="list"><p class="lede" style="margin:0">Nothing loaded yet.</p></div>
+  <button id="load" class="ghost">Look for offers</button>
+  <div id="listMsg" class="msg"></div>
+</div>
+
+<div class="note">
+  <p><b>An offer is not a promise.</b> Whoever made it can spend the money afterwards — then accepting
+  it simply fails and you lose nothing but a moment. Always check before you accept.</p>
+  <p><b>Nobody holds your money.</b> It sits in your own wallet until the swap happens, and the swap
+  happens in one step. There is no in-between state where it is stuck somewhere.</p>
+  <p><b>This page does not need us.</b> Save it and it keeps working. It talks to the Base network and
+  to public message relays, never to a server of ours.</p>
+  <p>Settlement: Seaport <code>0x0000000000000068F116a894984e2DB1123eB395</code> on Base.
+  We wrote none of it.</p>
+</div>
+
+</div>
+<script type="module">
+import { ethers } from "https://esm.sh/ethers@6.13.4";
+
+const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
+const CHAIN_ID = 8453, ZERO = "0x0000000000000000000000000000000000000000", Z32 = "0x" + "00".repeat(32);
+const TOKENS = {
+  USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
+  EURC: { address: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42", decimals: 6 },
+};
+const TYPES = {
+  OrderComponents: [
+    {name:"offerer",type:"address"},{name:"zone",type:"address"},{name:"offer",type:"OfferItem[]"},
+    {name:"consideration",type:"ConsiderationItem[]"},{name:"orderType",type:"uint8"},
+    {name:"startTime",type:"uint256"},{name:"endTime",type:"uint256"},{name:"zoneHash",type:"bytes32"},
+    {name:"salt",type:"uint256"},{name:"conduitKey",type:"bytes32"},{name:"counter",type:"uint256"}],
+  OfferItem: [{name:"itemType",type:"uint8"},{name:"token",type:"address"},
+    {name:"identifierOrCriteria",type:"uint256"},{name:"startAmount",type:"uint256"},{name:"endAmount",type:"uint256"}],
+  ConsiderationItem: [{name:"itemType",type:"uint8"},{name:"token",type:"address"},
+    {name:"identifierOrCriteria",type:"uint256"},{name:"startAmount",type:"uint256"},
+    {name:"endAmount",type:"uint256"},{name:"recipient",type:"address"}],
+};
+const DOMAIN = { name:"Seaport", version:"1.6", chainId:CHAIN_ID, verifyingContract:SEAPORT };
+const SEAPORT_ABI = [
+  "function getCounter(address) view returns (uint256)",
+  "function getOrderStatus(bytes32) view returns (bool,bool,uint256,uint256)",
+  "function fulfillOrder(((address,address,(uint8,address,uint256,uint256,uint256)[],(uint8,address,uint256,uint256,uint256,address)[],uint8,uint256,uint256,bytes32,uint256,bytes32,uint256),bytes),bytes32) payable returns (bool)",
+];
+const ERC20 = ["function balanceOf(address) view returns (uint256)",
+  "function allowance(address,address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)"];
+const RPCS = ["https://base-rpc.publicnode.com","https://base.drpc.org","https://mainnet.base.org"];
+const RELAYS = ["wss://relay.damus.io","wss://nos.lol","wss://relay.primal.net"];
+const KIND = 38383, V = "nuri-p2p/1";
+
+const $ = (id) => document.getElementById(id);
+const say = (el, text, kind="info", why=[]) => {
+  el.className = `msg show ${kind}`;
+  el.innerHTML = text + (why.length ? `<ul class="why">${why.map(w=>`<li>${w}</li>`).join("")}</ul>` : "");
+};
+let rpc;
+const provider = async () => rpc ??= new ethers.JsonRpcProvider(RPCS[0], CHAIN_ID, { staticNetwork: true });
+const browserWallet = async () => {
+  if (!window.ethereum) throw new Error("No wallet found in this browser.");
+  const bp = new ethers.BrowserProvider(window.ethereum);
+  await bp.send("eth_requestAccounts", []);
+  const net = await bp.getNetwork();
+  if (Number(net.chainId) !== CHAIN_ID) {
+    await bp.send("wallet_switchEthereumChain", [{ chainId: "0x2105" }]);
+  }
+  return await bp.getSigner();
+};
+const hashOf = (o) => ethers.TypedDataEncoder.hashStruct("OrderComponents", TYPES, o);
+const pretty = (units, sym) => `${ethers.formatUnits(units, TOKENS[sym].decimals)} ${sym}`;
+const symOf = (addr) => Object.keys(TOKENS).find(k => TOKENS[k].address.toLowerCase() === addr.toLowerCase());
+
+function buildOrder({ offerer, give, want, expirySeconds, counter }) {
+  const start = Math.floor(Date.now()/1000) - 60; // tolerate block-clock drift
+  const g = TOKENS[give.token], w = TOKENS[want.token];
+  const ga = ethers.parseUnits(give.amount, g.decimals).toString();
+  const wa = ethers.parseUnits(want.amount, w.decimals).toString();
+  if (ga === "0" || wa === "0") throw new Error("Amounts must be more than zero.");
+  return { offerer, zone: ZERO,
+    offer: [{ itemType:1, token:g.address, identifierOrCriteria:"0", startAmount:ga, endAmount:ga }],
+    consideration: [{ itemType:1, token:w.address, identifierOrCriteria:"0", startAmount:wa, endAmount:wa, recipient:offerer }],
+    orderType: 0, startTime: String(start), endTime: String(start + 60 + expirySeconds),
+    zoneHash: Z32, salt: ethers.hexlify(ethers.randomBytes(32)), conduitKey: Z32, counter: String(counter) };
+}
+
+function readOffer(text) {
+  let note; try { note = JSON.parse(text); } catch { return { ok:false, why:["That is not a valid offer."] }; }
+  const body = note.content ? (()=>{ try { return JSON.parse(note.content); } catch { return null; } })() : note;
+  if (!body || body.v !== V) return { ok:false, why:["Unknown offer format."] };
+  if (body.chainId !== CHAIN_ID) return { ok:false, why:["This offer is for a different network."] };
+  if (body.seaport?.toLowerCase() !== SEAPORT.toLowerCase()) return { ok:false, why:["This offer uses a settlement contract we do not know."] };
+  const o = body.order;
+  if (o.offer?.length !== 1 || o.consideration?.length !== 1) return { ok:false, why:["This offer has an unsupported shape."] };
+  if (o.zone !== ZERO || o.conduitKey !== Z32) return { ok:false, why:["This offer could interfere with the swap."] };
+  let signer; try { signer = ethers.verifyTypedData(DOMAIN, TYPES, o, body.signature); } catch { return { ok:false, why:["The signature is not readable."] }; }
+  if (signer.toLowerCase() !== o.offerer.toLowerCase()) return { ok:false, why:["The signature does not belong to whoever made this offer."] };
+  return { ok:true, signed:{ parameters:o, signature:body.signature } };
+}
+
+async function inspect(signed, taker) {
+  const p = await provider(), o = signed.parameters, why = [];
+  const now = (await p.getBlock("latest")).timestamp;
+  if (Number(o.endTime) <= now) why.push("This offer has expired.");
+  if (Number(o.startTime) > now) why.push("This offer is not active yet.");
+  if (why.length) return { ok:false, why };
+  const sea = new ethers.Contract(SEAPORT, SEAPORT_ABI, p);
+  const give = o.offer[0], want = o.consideration[0];
+  const gt = new ethers.Contract(give.token, ERC20, p), wt = new ethers.Contract(want.token, ERC20, p);
+  const [st, counter, mBal, mAll] = await Promise.all([
+    sea.getOrderStatus(hashOf(o)), sea.getCounter(o.offerer), gt.balanceOf(o.offerer), gt.allowance(o.offerer, SEAPORT)]);
+  if (st[1]) why.push("This offer was withdrawn.");
+  if (st[2] > 0n) why.push("Somebody already took this offer.");
+  if (BigInt(o.counter) !== counter) why.push("This offer was withdrawn.");
+  if (mBal < BigInt(give.startAmount)) why.push("Whoever made this offer no longer has the money.");
+  if (mAll < BigInt(give.startAmount)) why.push("Whoever made this offer withdrew permission.");
+  if (taker) {
+    const [bal, all] = await Promise.all([wt.balanceOf(taker), wt.allowance(taker, SEAPORT)]);
+    if (bal < BigInt(want.startAmount)) why.push(`You need ${pretty(want.startAmount, symOf(want.token))} and do not have it.`);
+    else if (all < BigInt(want.startAmount)) why.push("__APPROVE__");
+  }
+  return { ok: why.length === 0, why, give, want };
+}
+
+const advanced = (signed) => {
+  const { counter, ...rest } = signed.parameters;
+  return [[rest.offerer, rest.zone,
+    rest.offer.map(i=>[i.itemType,i.token,i.identifierOrCriteria,i.startAmount,i.endAmount]),
+    rest.consideration.map(i=>[i.itemType,i.token,i.identifierOrCriteria,i.startAmount,i.endAmount,i.recipient]),
+    rest.orderType, rest.startTime, rest.endTime, rest.zoneHash, rest.salt, rest.conduitKey,
+    rest.consideration.length], signed.signature];
+};
+
+let madeOffer = null;
+$("mk").onclick = async () => {
+  const el = $("mkMsg");
+  try {
+    say(el, "Opening your wallet…");
+    const signer = await browserWallet();
+    const me = await signer.getAddress();
+    const p = await provider();
+    const counter = await new ethers.Contract(SEAPORT, SEAPORT_ABI, p).getCounter(me);
+    const give = { token: $("giveTok").value, amount: $("giveAmt").value.trim() };
+    const want = { token: $("wantTok").value, amount: $("wantAmt").value.trim() };
+    if (give.token === want.token) throw new Error("Pick two different things to swap.");
+    const order = buildOrder({ offerer: me, give, want, expirySeconds: Number($("expiry").value), counter });
+
+    const units = order.offer[0].startAmount;
+    const tok = new ethers.Contract(order.offer[0].token, ERC20, p);
+    if (await tok.balanceOf(me) < BigInt(units)) throw new Error(`You do not have ${give.amount} ${give.token}.`);
+    if (await tok.allowance(me, SEAPORT) < BigInt(units)) {
+      say(el, "First, allow this exact amount to be swapped. Confirm in your wallet…");
+      const tx = await new ethers.Contract(order.offer[0].token, ERC20, signer).approve(SEAPORT, units);
+      await tx.wait();
+    }
+    say(el, "Now sign the offer. This costs nothing and moves nothing.");
+    const signature = await signer.signTypedData(DOMAIN, TYPES, order);
+    madeOffer = { parameters: order, signature };
+    const note = { kind: KIND, created_at: Number(order.startTime),
+      content: JSON.stringify({ v:V, chainId:CHAIN_ID, seaport:SEAPORT, order, signature }),
+      tags: [["d", hashOf(order)], ["k","swap"], ["expiration", String(order.endTime)],
+             ["chain", String(CHAIN_ID)], ["v", V]] };
+    $("mkOut").value = JSON.stringify(note, null, 2);
+    $("mkOut").style.display = "block";
+    $("cp").disabled = false;
+    say(el, `Done. Send this to anyone. Your ${give.amount} ${give.token} stays yours until somebody accepts.`, "ok");
+  } catch (e) { say(el, e.shortMessage ?? e.message ?? String(e), "no"); }
+};
+$("cp").onclick = async () => { await navigator.clipboard.writeText($("mkOut").value); say($("mkMsg"), "Copied.", "ok"); };
+
+let checked = null;
+$("chk").onclick = async () => {
+  const el = $("takeMsg"); checked = null; $("take").disabled = true;
+  const parsed = readOffer($("inOffer").value.trim());
+  if (!parsed.ok) return say(el, "Cannot use this offer:", "no", parsed.why);
+  try {
+    say(el, "Checking…");
+    let me = null; try { me = await (await browserWallet()).getAddress(); } catch {}
+    const r = await inspect(parsed.signed, me);
+    const deal = `They send ${pretty(r.give?.startAmount ?? 0, symOf(parsed.signed.parameters.offer[0].token))}, you send ${pretty(r.want?.startAmount ?? 0, symOf(parsed.signed.parameters.consideration[0].token))}.`;
+    if (!r.ok && !r.why.includes("__APPROVE__")) return say(el, "You cannot take this offer:", "no", r.why);
+    checked = parsed.signed; $("take").disabled = false;
+    say(el, `${deal} Looks good.` + (r.why.includes("__APPROVE__") ? " You will be asked to allow the amount first." : ""), "ok");
+  } catch (e) { say(el, e.shortMessage ?? e.message, "no"); }
+};
+
+$("take").onclick = async () => {
+  const el = $("takeMsg");
+  try {
+    const signer = await browserWallet(), me = await signer.getAddress();
+    const want = checked.parameters.consideration[0];
+    const p = await provider();
+    if (await new ethers.Contract(want.token, ERC20, p).allowance(me, SEAPORT) < BigInt(want.startAmount)) {
+      say(el, "Allow this amount first. Confirm in your wallet…");
+      await (await new ethers.Contract(want.token, ERC20, signer).approve(SEAPORT, want.startAmount)).wait();
+    }
+    say(el, "Checking once more, right before sending…");
+    const again = await inspect(checked, me);
+    if (!again.ok && !again.why.includes("__APPROVE__")) return say(el, "Stopped. Something changed:", "no", again.why);
+    say(el, "Confirm the swap in your wallet…");
+    const tx = await new ethers.Contract(SEAPORT, SEAPORT_ABI, signer).fulfillOrder(advanced(checked), Z32);
+    say(el, "Sent. Waiting for it to go through…");
+    const rec = await tx.wait();
+    say(el, `Done. Both sides moved in one step.<br><code>${rec.hash}</code>`, "ok");
+    $("take").disabled = true;
+  } catch (e) { say(el, e.shortMessage ?? e.message, "no"); }
+};
+
+$("load").onclick = async () => {
+  const el = $("listMsg"), box = $("list");
+  say(el, "Looking on public relays…");
+  const found = new Map();
+  await Promise.all(RELAYS.map(url => new Promise(res => {
+    let ws; const done = () => { try { ws?.close(); } catch {} res(); };
+    try { ws = new WebSocket(url); } catch { return res(); }
+    const timer = setTimeout(done, 6000);
+    ws.onopen = () => ws.send(JSON.stringify(["REQ","p2p",{kinds:[KIND],limit:40}]));
+    ws.onmessage = (m) => {
+      const msg = JSON.parse(m.data);
+      if (msg[0] === "EOSE") { clearTimeout(timer); return done(); }
+      if (msg[0] !== "EVENT") return;
+      const r = readOffer(msg[2].content);
+      if (r.ok) found.set(hashOf(r.signed.parameters), r.signed);
+    };
+    ws.onerror = () => { clearTimeout(timer); done(); };
+  })));
+  const now = Math.floor(Date.now()/1000);
+  const live = [...found.values()].filter(s => Number(s.parameters.endTime) > now);
+  if (!live.length) {
+    box.innerHTML = `<p class="lede" style="margin:0">Nothing on offer right now. That is normal — offers only exist while somebody is making one.</p>`;
+    return say(el, "", "info");
+  }
+  box.innerHTML = live.map(s => {
+    const g = s.parameters.offer[0], w = s.parameters.consideration[0];
+    const gs = symOf(g.token), ws_ = symOf(w.token);
+    if (!gs || !ws_) return "";
+    const mins = Math.round((Number(s.parameters.endTime) - now)/60);
+    return `<div class="offer"><div class="deal">${pretty(g.startAmount,gs)} → ${pretty(w.startAmount,ws_)}</div>
+      <div class="meta">from ${s.parameters.offerer.slice(0,6)}…${s.parameters.offerer.slice(-4)} · ${mins} min left</div></div>`;
+  }).join("") || `<p class="lede" style="margin:0">Offers found, but none for these two currencies.</p>`;
+  say(el, `${live.length} offer${live.length===1?"":"s"} found. Copy one into the box above to take it.`, "ok");
+};
+</script>
+</body></html>
