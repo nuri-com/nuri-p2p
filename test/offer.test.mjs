@@ -49,6 +49,19 @@ test("an offer always expires", () => {
   assert.equal(Number(o.endTime) - Number(o.startTime), 600);
 });
 
+test("a fresh offer is already active against the real chain clock", async () => {
+  // Regression: startTime defaulted to exactly wall-clock now, but block timestamps
+  // trail by a second or two — every fill at a second boundary was refused as
+  // "not active yet". The default must already be in the past.
+  const { connect } = await import("../src/fill.mjs");
+  let p;
+  try { p = await connect(); } catch { return; } // offline: nothing to assert against
+  const now = Math.floor(Date.now() / 1000);
+  const o = buildOrder({ offerer: alice.address, give: { token: "USDC", amount: "1" }, want: { token: "EURC", amount: "1" } });
+  const ts = (await p.getBlock("latest")).timestamp;
+  assert.ok(Number(o.startTime) <= ts, `startTime ${o.startTime} is after block time ${ts} (wall ${now})`);
+});
+
 test("rejects nonsense before it can ever be signed", () => {
   assert.throws(() => anOrder({ expirySeconds: 0 }), /positive/);
   assert.throws(() => buildOrder({ offerer: "not-an-address", give: { token: "USDC", amount: "1" }, want: { token: "EURC", amount: "1" } }), /address/);

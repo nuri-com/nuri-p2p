@@ -30,11 +30,16 @@ export const DEFAULT_RELAYS = [
 ];
 
 export const DEFAULT_RPCS = [
+  "https://1rpc.io/base",
   "https://base-rpc.publicnode.com",
-  "https://base.drpc.org",
   "https://mainnet.base.org",
+  "https://base.drpc.org",
 ];
 
+// Ordered by measured behavior, 2026-09-13: ethers batches concurrent reads, and
+// not every public endpoint honors batches. mainnet.base.org mangles them
+// ("missing revert data" on calls that succeed alone); drpc's free plan rejects
+// batches over 3. publicnode and 1rpc handle full batches. First working wins.
 // A swap offer is worthless once stale, and a long-lived offer is a free option
 // for whoever takes it. One hour is the default; callers may shorten it.
 export const DEFAULT_EXPIRY_SECONDS = 3600;

@@ -68,7 +68,10 @@ export function buildOrder({ offerer, give, want, expirySeconds = DEFAULT_EXPIRY
   const wantToken = resolveToken(want.token);
   if (!(expirySeconds > 0)) throw new Error("expirySeconds must be positive");
 
-  const start = startTime ?? Math.floor(Date.now() / 1000);
+  // Backdated: block timestamps trail wall clock by a second or two, and an offer
+  // signed "now" is meant to be active immediately. Without this margin the fill
+  // is a coin flip at every second boundary — this exact flake killed a live proof.
+  const start = startTime ?? Math.floor(Date.now() / 1000) - 60;
   const end = start + expirySeconds;
   const giveAmount = toUnits(give.amount, giveToken);
   const wantAmount = toUnits(want.amount, wantToken);

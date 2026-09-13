@@ -20,14 +20,25 @@ export const ERC20_ABI = [
   "function decimals() view returns (uint8)",
 ];
 
-export async function connect(urls = DEFAULT_RPCS) {
+export async function connect(urls = process.env.NURI_P2P_RPC ? [process.env.NURI_P2P_RPC] : DEFAULT_RPCS) {
   for (const url of urls) {
     try {
       const p = new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true });
-      if (Number((await p.getNetwork()).chainId) === CHAIN_ID) return p;
-    } catch { /* a dead RPC is not an answer; try the next */ }
+      // Probe with what we actually do: concurrent reads in one batch. A chainId
+      // alone proves nothing — mainnet.base.org answers it and then mangles batches,
+      // drpc's free plan rejects batches over 3, and free tiers throttle under load.
+      // First endpoint that survives a real batch wins.
+      const sea = new ethers.Contract(SEAPORT, ["function getCounter(address) view returns (uint256)"], p);
+      const [chain, block, code, counter] = await Promise.all([
+        p.getNetwork(),
+        p.getBlockNumber(),
+        p.getCode(SEAPORT),
+        sea.getCounter("0x0000000000000000000000000000000000000001"),
+      ]);
+      if (Number(chain.chainId) === CHAIN_ID && block > 0 && code.length > 2 && counter === 0n) return p;
+    } catch { /* this endpoint is degraded; the next one gets its chance */ }
   }
-  throw new Error("no Base RPC reachable");
+  throw new Error("no healthy Base RPC reachable");
 }
 
 export const seaport = (runner) => new ethers.Contract(SEAPORT, SEAPORT_ABI, runner);
@@ -106,18 +117,72 @@ export async function fill(signed, { wallet, provider }) {
   const sim = await simulate(signed, { provider: p, taker });
   if (!sim.ok) throw new Error(`simulation failed: ${sim.reason}`);
 
-  const tx = await seaport(wallet).fulfillOrder(toAdvanced(signed), "0x" + "00".repeat(32));
-  return { tx, receipt: await tx.wait() };
+  const req = await seaport(wallet).fulfillOrder.populateTransaction(toAdvanced(signed), "0x" + "00".repeat(32));
+  return sendWithFreshNonce(wallet, req);
 }
 
 // Withdraw an offer on chain, so nobody can take it afterwards.
 export async function cancel(order, { wallet }) {
-  const tx = await seaport(wallet).cancel([order]);
-  return { tx, receipt: await tx.wait() };
+  const req = await seaport(wallet).cancel.populateTransaction([order]);
+  return sendWithFreshNonce(wallet, req);
 }
 
 // One approval per token, for exactly the amount an offer needs.
 export async function approve(token, amount, { wallet }) {
-  const tx = await new ethers.Contract(token, ERC20_ABI, wallet).approve(SEAPORT, amount);
-  return { tx, receipt: await tx.wait() };
+  const req = await new ethers.Contract(token, ERC20_ABI, wallet).approve.populateTransaction(SEAPORT, amount);
+  return sendWithFreshNonce(wallet, req);
 }
+
+// Wait for a receipt the hard way: poll across every endpoint we have, and treat
+// a transport refusal as "not yet" rather than failure. Learned live: publicnode
+// broadcasts fine and then answers the receipt poll with 403 "archive requests
+// require a personal token". The transaction is on chain; only the waiting failed.
+// Without this, a landed transaction reads as a failed one — the worst possible lie.
+export async function waitForReceipt(hash, { timeoutMs = 120000, intervalMs = 2000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  // Always every endpoint: rotation is the safety, and reads are free. A pinned
+  // NURI_P2P_RPC must never narrow this — one endpoint's refusal to serve receipts
+  // must not turn a landed transaction into a failed run.
+  while (Date.now() < deadline) {
+    for (const url of DEFAULT_RPCS) {
+      try {
+        const p = new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true });
+        const receipt = await p.getTransactionReceipt(hash);
+        if (receipt) return receipt;
+      } catch (e) { lastError = e; /* a refusal is not an answer; next endpoint */ }
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`no receipt for ${hash} within ${timeoutMs}ms${lastError ? `: ${lastError.shortMessage ?? lastError.message}` : ""}`);
+}
+
+// A nonce read from one free endpoint can lag a block behind — we watched a fill
+// die with "next nonce 3, tx nonce 2" because the endpoint had not seen our own
+// approve yet. So: take the max across endpoints, and retry once on NONCE_EXPIRED
+// with a fresh max. Two retries would mean the chain moved under us twice, which
+// means something else is spending from this wallet — stop instead of guessing.
+export async function sendWithFreshNonce(wallet, txRequest) {
+  const addr = await wallet.getAddress();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const counts = await Promise.all(
+      DEFAULT_RPCS.map(async (url) => {
+        try {
+          const p = new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true });
+          return Number(await p.getTransactionCount(addr, "latest"));
+        } catch { return -1; }
+      }),
+    );
+    const nonce = Math.max(...counts);
+    if (nonce < 0) throw new Error("no endpoint would report a nonce");
+    try {
+      const tx = await wallet.sendTransaction({ ...txRequest, nonce });
+      return withReceipt(tx);
+    } catch (e) {
+      if (e.code !== "NONCE_EXPIRED" || attempt === 1) throw e;
+      // Someone — possibly us, on a lagging endpoint — moved first. Re-read and retry once.
+    }
+  }
+}
+
+const withReceipt = async (tx) => ({ tx, receipt: await waitForReceipt(tx.hash) });

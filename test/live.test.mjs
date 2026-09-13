@@ -5,7 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
 import { buildOrder, orderHash, domain, EIP712_TYPES } from "../src/offer.mjs";
-import { CHAIN_ID, SEAPORT, CONDUIT_CONTROLLER, TOKENS, DEFAULT_RPCS } from "../src/constants.mjs";
+import { connect } from "../src/fill.mjs";
+import { CHAIN_ID, SEAPORT, CONDUIT_CONTROLLER, TOKENS } from "../src/constants.mjs";
 
 const SEAPORT_ABI = [
   "function information() view returns (string version, bytes32 domainSeparator, address conduitController)",
@@ -13,18 +14,10 @@ const SEAPORT_ABI = [
   "function getOrderHash((address offerer,address zone,(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)[] offer,(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 counter) order) view returns (bytes32)",
 ];
 
-async function provider() {
-  for (const url of DEFAULT_RPCS) {
-    try {
-      const p = new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true });
-      if (Number((await p.getNetwork()).chainId) === CHAIN_ID) return p;
-    } catch { /* try the next one; a dead RPC is not a failed test */ }
-  }
-  return null;
-}
-
-const p = await provider();
-const online = { skip: p ? false : "no Base RPC reachable" };
+// One way onto the chain, used by everything. If no endpoint is healthy the live
+// tests skip instead of failing on somebody else's rate limit.
+const p = await connect().catch(() => null);
+const online = { skip: p ? false : "no healthy Base RPC reachable" };
 
 test("Seaport 1.6 is deployed at the address we hard-coded", online, async () => {
   const info = await new ethers.Contract(SEAPORT, SEAPORT_ABI, p).information();

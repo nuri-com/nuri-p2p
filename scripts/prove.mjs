@@ -74,10 +74,22 @@ console.log("\nfilling");
 const { tx, receipt } = await fill(parsed.signed, { wallet: taker, provider: p });
 console.log(`  tx ${tx.hash}  block ${receipt.blockNumber}  status ${receipt.status}`);
 
-const after = {
+const readAfter = async () => ({
   makerGive: await bal(p, giveT.address, maker.address), makerWant: await bal(p, wantT.address, maker.address),
   takerGive: await bal(p, giveT.address, taker.address), takerWant: await bal(p, wantT.address, taker.address),
-};
+});
+
+// A receipt means the transaction is mined, not that every endpoint can see it yet.
+// We watched a proof fail as MISMATCH on balances read from a lagging endpoint while
+// the chain had already moved both legs. So: poll until something changed, or stop
+// claiming and say so.
+let after = await readAfter();
+const same = (a, b) => a.makerGive === b.makerGive && a.makerWant === b.makerWant
+  && a.takerGive === b.takerGive && a.takerWant === b.takerWant;
+for (let i = 0; i < 30 && same(after, before); i++) {
+  await new Promise((r) => setTimeout(r, 2000));
+  after = await readAfter();
+}
 console.log(`after   maker ${fmt(after.makerGive, giveT.decimals)} ${GIVE.token} / ${fmt(after.makerWant, wantT.decimals)} ${WANT.token}`);
 console.log(`after   taker ${fmt(after.takerGive, giveT.decimals)} ${GIVE.token} / ${fmt(after.takerWant, wantT.decimals)} ${WANT.token}`);
 
