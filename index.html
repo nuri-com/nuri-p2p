@@ -171,9 +171,16 @@ function readOffer(text) {
   const o = body.terms.order;
   if (o.offer?.length !== 1 || o.consideration?.length !== 1) return { ok:false, why:["This offer has an unsupported shape."] };
   if (o.zone !== ZERO || o.conduitKey !== Z32) return { ok:false, why:["This offer could interfere with the swap."] };
-  let signer; try { signer = ethers.verifyTypedData(DOMAIN, TYPES, o, body.signature); } catch { return { ok:false, why:["The signature is not readable."] }; }
+  // The summary is what people read; the terms are what executes. They must agree,
+  // or an intent can advertise a bargain and settle something else entirely.
+  if (o.offer[0].token.toLowerCase() !== body.give.asset.toLowerCase()
+   || o.offer[0].startAmount !== body.give.amount
+   || o.consideration[0].token.toLowerCase() !== body.want.asset.toLowerCase()
+   || o.consideration[0].startAmount !== body.want.amount)
+    return { ok:false, why:["What this offer advertises is not what it would actually do."] };
+  let signer; try { signer = ethers.verifyTypedData(DOMAIN, TYPES, o, body.proof); } catch { return { ok:false, why:["The signature is not readable."] }; }
   if (signer.toLowerCase() !== o.offerer.toLowerCase()) return { ok:false, why:["The signature does not belong to whoever made this offer."] };
-  return { ok:true, signed:{ parameters:o, signature:body.signature } };
+  return { ok:true, signed:{ parameters:o, signature:body.proof } };
 }
 
 async function inspect(signed, taker) {
@@ -240,10 +247,12 @@ $("mk").onclick = async () => {
       expiry: Number(order.endTime), terms: { contract:SEAPORT, order }, proof: signature };
     const note = { kind: KIND, created_at: Number(order.startTime),
       content: JSON.stringify(intent),
-      tags: [["d", hashOf(order)], ["k","intent"], ["settle", CAN_SETTLE],
+      // Relays index single-letter tags only (NIP-01); longer names are rejected
+      // as "unindexed tag filter", so m/g/w are what discovery can actually use.
+      tags: [["d", hashOf(order)], ["k","intent"], ["m", CAN_SETTLE],
              ["expiration", String(order.endTime)],
-             ["gives", BASE, intent.give.asset, intent.give.amount],
-             ["wants", BASE, intent.want.asset, intent.want.amount], ["v", V]] };
+             ["g", BASE, intent.give.asset, intent.give.amount],
+             ["w", BASE, intent.want.asset, intent.want.amount], ["v", V]] };
     $("mkOut").value = JSON.stringify(note, null, 2);
     $("mkOut").style.display = "block";
     $("cp").disabled = false;
@@ -298,7 +307,7 @@ $("load").onclick = async () => {
     let ws; const done = () => { try { ws?.close(); } catch {} res(); };
     try { ws = new WebSocket(url); } catch { return res(); }
     const timer = setTimeout(done, 6000);
-    ws.onopen = () => ws.send(JSON.stringify(["REQ","p2p",{kinds:[KIND],limit:40}]));
+    ws.onopen = () => ws.send(JSON.stringify(["REQ","p2p",{kinds:[KIND],"#m":[CAN_SETTLE],limit:40}]));
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg[0] === "EOSE") { clearTimeout(timer); return done(); }

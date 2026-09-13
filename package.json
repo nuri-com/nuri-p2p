@@ -8,6 +8,8 @@
     "test": "node --test 'test/**/*.test.mjs'",
     "check": "node --check src/offer.mjs && node --check src/board.mjs && node --check src/fill.mjs && node --check src/constants.mjs",
     "test:page": "node scripts/build-smoke.mjs && node scripts/page-smoke.mjs",
+    "test:live": "node scripts/build-smoke.mjs && node scripts/page-live.mjs",
+    "prove:board": "node scripts/prove-board.mjs",
     "prove": "node scripts/prove.mjs",
     "prove:stale": "node scripts/prove-stale.mjs"
   },

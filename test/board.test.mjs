@@ -32,9 +32,21 @@ test("an intent says what, not how — the method is a name", async () => {
 
 test("the envelope is filterable without understanding the method", async () => {
   const tags = Object.fromEntries(toNote(await anIntent()).tags.map(([k, ...v]) => [k, v]));
-  assert.equal(tags.settle[0], "seaport-1.6");
-  assert.equal(tags.gives[0], CHAINS.base);
+  assert.equal(tags.m[0], "seaport-1.6");
+  assert.equal(tags.g[0], CHAINS.base);
   assert.equal(tags.k[0], "intent");
+});
+
+test("every filterable tag is single-letter, or relays reject the query", async () => {
+  // Learned the hard way: nos.lol answers "unindexed tag filter" and closes the
+  // subscription. A multi-letter tag name is silently useless for discovery.
+  const filterable = ["d", "k", "m", "g", "w", "v"];
+  const names = toNote(await anIntent()).tags.map(([k]) => k);
+  for (const n of names) {
+    if (n === "expiration") continue; // NIP-40, read by relays, never filtered on
+    assert.match(n, /^[a-zA-Z]$/, `tag "${n}" cannot be filtered on`);
+    assert.ok(filterable.includes(n), `unexpected tag "${n}"`);
+  }
 });
 
 test("round trip keeps an intent fillable", async () => {

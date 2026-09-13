@@ -4,11 +4,16 @@
 
 ```sh
 npm run check      # every file parses
-npm test           # 39 tests, 8 of them read Base for real
-npm run test:page  # boots index.html in headless Chrome
+npm test           # 42 tests, 8 of them read Base for real
+npm run test:page  # boots index.html in headless Chrome, offline
+npm run test:live  # the shipped page against the real public relays
 ```
 
-All three must exit 0.
+All four must exit 0.
+
+`test:live` asks the relays itself first. If intents are out there and the page shows none, it
+fails — an empty board is only a pass when the board is genuinely empty. That rule exists because
+the empty branch hid a real parsing bug in the page for one run.
 
 ## The rules
 

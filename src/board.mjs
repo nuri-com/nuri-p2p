@@ -16,13 +16,16 @@ export function toNote(intent) {
     kind: OFFER_KIND,
     created_at: Math.floor(Date.now() / 1000),
     content,
+    // Relays index ONLY single-letter tags (NIP-01). A filter on a longer name is
+    // rejected outright — "unindexed tag filter" — so the settlement method has to
+    // live under a single letter or clients cannot ask for what they can execute.
     tags: [
       ["d", intent.id],
       ["k", "intent"],
-      ["settle", intent.settle],
+      ["m", intent.settle],                    // m = method; the one filterable field
       ["expiration", String(intent.expiry)],   // NIP-40: relays may drop it themselves
-      ["gives", intent.give.chain, intent.give.asset, intent.give.amount],
-      ["wants", intent.want.chain, intent.want.asset, intent.want.amount],
+      ["g", intent.give.chain, intent.give.asset, intent.give.amount],
+      ["w", intent.want.chain, intent.want.asset, intent.want.amount],
       ["v", SCHEMA_VERSION],
     ],
   };
@@ -66,37 +69,72 @@ export { known as knownMethods };
 // --- relay I/O -------------------------------------------------------------
 // Imported lazily, so everything above works offline and without nostr-tools.
 
-async function tools() {
-  return import("nostr-tools/pure").catch(() => import("nostr-tools"));
+// Only the signing half of nostr-tools: that part is cryptography and we do not
+// reimplement it. Relay I/O is a WebSocket and a JSON array, so it is written here —
+// nostr-tools' own pool overflows the stack when one relay refuses the connection,
+// and a dead relay must never take the other two down with it.
+const signing = () => import("nostr-tools/pure");
+
+// One relay, one job, one hard deadline. Resolves with whatever it got; never rejects,
+// because a relay being down is an ordinary Tuesday, not an error the caller handles.
+function ask(url, frames, { timeoutMs, collect }) {
+  return new Promise((resolve) => {
+    const got = [];
+    let ws, done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { ws?.close(); } catch { /* already gone */ }
+      resolve({ url, ok, events: got });
+    };
+    const timer = setTimeout(() => finish(got.length > 0), timeoutMs);
+    try { ws = new WebSocket(url); } catch { return finish(false); }
+    ws.onerror = () => finish(false);
+    ws.onclose = () => finish(got.length > 0 || done);
+    ws.onopen = () => { for (const f of frames) ws.send(JSON.stringify(f)); };
+    ws.onmessage = (m) => {
+      let d;
+      try { d = JSON.parse(m.data); } catch { return; }
+      if (d[0] === "EVENT" && collect) got.push(d[2]);
+      if (d[0] === "EOSE") return finish(true);
+      if (d[0] === "OK") return finish(d[2] === true);       // relay accepted our event
+      if (d[0] === "CLOSED" || d[0] === "NOTICE") return finish(false);
+    };
+  });
 }
 
 // The Nostr key says who posted. The intent's own proof says who may spend.
 // Never conflate them: a throwaway posting identity is fine and intended.
-export async function publish(intent, { relays = DEFAULT_RELAYS, secretKey } = {}) {
-  const { SimplePool, finalizeEvent, generateSecretKey } = await tools();
+export async function publish(intent, { relays = DEFAULT_RELAYS, secretKey, timeoutMs = 8000 } = {}) {
+  const { finalizeEvent, generateSecretKey } = await signing();
   const event = finalizeEvent(toNote(intent), secretKey ?? generateSecretKey());
-  const pool = new SimplePool();
-  try {
-    const results = await Promise.allSettled(pool.publish(relays, event));
-    return { event, accepted: results.filter((r) => r.status === "fulfilled").length, attempted: relays.length };
-  } finally { pool.close(relays); }
+  const results = await Promise.all(
+    relays.map((r) => ask(r, [["EVENT", event]], { timeoutMs, collect: false })));
+  return {
+    event,
+    accepted: results.filter((r) => r.ok).length,
+    attempted: relays.length,
+    byRelay: Object.fromEntries(results.map((r) => [r.url, r.ok])),
+  };
 }
 
-// Ask for intents. `settle` filters to methods you can actually act on.
+// Ask for intents. `settle` filters to methods you can actually act on, so a client
+// never downloads rails it cannot use.
 export async function fetchIntents({ relays = DEFAULT_RELAYS, limit = 50, settle, timeoutMs = 8000 } = {}) {
-  const { SimplePool } = await tools();
-  const pool = new SimplePool();
-  try {
-    const filter = { kinds: [OFFER_KIND], limit };
-    if (settle) filter["#settle"] = Array.isArray(settle) ? settle : [settle];
-    const events = await pool.querySync(relays, filter, { maxWait: timeoutMs });
-    const seen = new Set(), out = [];
+  const filter = { kinds: [OFFER_KIND], limit };
+  if (settle) filter["#m"] = Array.isArray(settle) ? settle : [settle];
+  const results = await Promise.all(
+    relays.map((r) => ask(r, [["REQ", "q", filter]], { timeoutMs, collect: true })));
+
+  const seen = new Set(), out = [];
+  for (const { events } of results) {
     for (const e of events) {
       const r = fromNote(e);
       if (!r.ok || seen.has(r.intent.id)) continue;
       seen.add(r.intent.id);
       out.push({ ...r, event: e });
     }
-    return out;
-  } finally { pool.close(relays); }
+  }
+  return out;
 }

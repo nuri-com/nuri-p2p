@@ -42,11 +42,27 @@ of it.
 - Same chain only. Bitcoin, Lightning and Arkade need someone to be online at the right moment,
   which is a different promise. Not here.
 
+## What is proven, and what is not
+
+| | evidence |
+|---|---|
+| the board carries intents without us | **proven live** — published to three public relays, read back by a fresh client, signature and both legs intact |
+| a stranger's client can read them | **proven live** — 20 lines of WebSocket, no code of ours, full understanding |
+| the shipped page finds real intents | **proven live** — headless Chrome, real relays, two intents listed |
+| a worthless offer costs the taker nothing | **proven live** — refused against Base before any gas |
+| our order hash is what Seaport computes | **proven live** — asserted against `getOrderHash` on Base |
+| **a real swap settles** | **not yet** — needs two funded wallets, one command |
+
+Proof files land in `proofs/`, each with the transaction or event ids to check yourself.
+
 ## Run it
 
 ```sh
 npm install
-npm test
+npm test               # 42 tests, 8 of them read Base for real
+npm run test:page      # the page in headless Chrome, offline
+npm run test:live      # the page against the real public relays
+npm run prove:board    # dry; add --publish to post to public relays
 ```
 
 Open `index.html` in a browser. It works from `file://`, with no server.
