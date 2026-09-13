@@ -1,123 +1,148 @@
+// The methods layer is the product claim: a new rail must be addable without
+// touching the board, the page, or anybody else's client. These tests prove that.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { buildOrder, signOrder, orderHash } from "../src/offer.mjs";
-import { toNote, fromNote, toFile, fromFile, SCHEMA_VERSION } from "../src/board.mjs";
-import { OFFER_KIND, CHAIN_ID, SEAPORT } from "../src/constants.mjs";
+import { buildOrder, signOrder } from "../src/offer.mjs";
+import { toNote, fromNote, toFile, fromFile, SCHEMA_VERSION, knownMethods } from "../src/board.mjs";
+import seaport from "../src/settle-seaport.mjs";
+import htlc, { timelocksAreSafe } from "../src/settle-htlc.mjs";
+import { CHAINS } from "../src/settle.mjs";
+import { OFFER_KIND } from "../src/constants.mjs";
 
 const alice = new ethers.Wallet("0x" + "11".repeat(32));
-const mallory = new ethers.Wallet("0x" + "22".repeat(32));
 const NOW = 1_800_000_000;
+const read = (note, at = NOW + 1) => fromNote(note, { now: at });
 
-async function anOffer(over = {}) {
-  return signOrder(alice, buildOrder({
-    offerer: alice.address,
-    give: { token: "USDC", amount: "1.0" },
-    want: { token: "EURC", amount: "0.92" },
-    startTime: NOW, salt: "0x" + "ab".repeat(32), ...over,
-  }));
-}
-const read = (note) => fromNote(note, { now: NOW + 1 });
+const anIntent = async (over = {}) => seaport.fromSigned(await signOrder(alice, buildOrder({
+  offerer: alice.address,
+  give: { token: "USDC", amount: "1.0" },
+  want: { token: "EURC", amount: "0.92" },
+  startTime: NOW, salt: "0x" + "ab".repeat(32), ...over,
+})));
 
-test("a note carries the whole order, so a reader needs nothing else", async () => {
-  const signed = await anOffer();
-  const note = toNote(signed);
-  assert.equal(note.kind, OFFER_KIND);
-  const body = JSON.parse(note.content);
-  assert.equal(body.v, SCHEMA_VERSION);
-  assert.equal(body.chainId, CHAIN_ID);
-  assert.equal(body.seaport, SEAPORT);
-  assert.deepEqual(body.order, signed.parameters);
-  assert.equal(body.signature, signed.signature);
+test("an intent says what, not how — the method is a name", async () => {
+  const i = await anIntent();
+  assert.equal(i.settle, "seaport-1.6");
+  assert.equal(i.give.chain, CHAINS.base);
+  assert.equal(i.give.amount, "1000000");
+  assert.equal(i.want.amount, "920000");
+  assert.ok(i.terms, "how it settles lives in terms");
 });
 
-test("tags let a reader filter without parsing the body", async () => {
-  const t = Object.fromEntries(toNote(await anOffer()).tags.map(([k, ...v]) => [k, v]));
-  assert.equal(t.d[0], orderHash((await anOffer()).parameters));
-  assert.equal(t.expiration[0], String(NOW + 3600));
-  assert.equal(t.chain[0], String(CHAIN_ID));
-  assert.equal(t.gives[1], "1000000");
-  assert.equal(t.wants[1], "920000");
+test("the envelope is filterable without understanding the method", async () => {
+  const tags = Object.fromEntries(toNote(await anIntent()).tags.map(([k, ...v]) => [k, v]));
+  assert.equal(tags.settle[0], "seaport-1.6");
+  assert.equal(tags.gives[0], CHAINS.base);
+  assert.equal(tags.k[0], "intent");
 });
 
-test("round trip through a note keeps the order fillable", async () => {
-  const signed = await anOffer();
-  const r = read(toNote(signed));
+test("round trip keeps an intent fillable", async () => {
+  const r = read(toNote(await anIntent()));
   assert.ok(r.ok, r.reason);
-  assert.deepEqual(r.signed.parameters, signed.parameters);
-  assert.equal(r.hash, orderHash(signed.parameters));
+  assert.equal(r.method.id, "seaport-1.6");
 });
 
-test("round trip through a file works with no relay at all", async () => {
-  const signed = await anOffer();
-  const r = fromFile(toFile(signed), { now: NOW + 1 });
+test("works as a file, with no relay at all", async () => {
+  const r = fromFile(toFile(await anIntent()), { now: NOW + 1 });
   assert.ok(r.ok, r.reason);
-  assert.equal(r.signed.signature, signed.signature);
 });
 
-test("hostile input is skipped, never thrown", async () => {
-  const cases = [
-    [null, "wrong_kind"],
-    [{ kind: 1, content: "{}" }, "wrong_kind"],
-    [{ kind: OFFER_KIND, content: "not json" }, "unparseable"],
-    [{ kind: OFFER_KIND, content: JSON.stringify({ v: "other" }) }, "unknown_version"],
-  ];
-  for (const [note, reason] of cases) assert.equal(read(note).reason, reason);
-  assert.equal(fromFile("<html>", { now: NOW }).reason, "unparseable");
-});
-
-test("an offer for another chain is refused", async () => {
-  const note = toNote(await anOffer(), { chainId: 1 });
-  assert.equal(read(note).reason, "wrong_chain");
-});
-
-test("an offer pointing at a different settlement contract is refused", async () => {
-  const note = toNote(await anOffer());
+test("an unknown method is skipped, not guessed at", async () => {
+  const note = toNote(await anIntent());
   const body = JSON.parse(note.content);
-  body.seaport = "0x000000000000000000000000000000000000dEaD";
-  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "unknown_settlement_contract");
+  body.settle = "some-future-rail";
+  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "unknown_settlement_method");
 });
 
-test("an expired offer is refused", async () => {
-  const note = toNote(await anOffer({ expirySeconds: 60 }));
-  assert.equal(fromNote(note, { now: NOW + 61 }).reason, "expired");
-});
-
-test("a forged signature is refused", async () => {
-  const signed = await anOffer();
-  const note = toNote(signed);
-  const body = JSON.parse(note.content);
-  body.signature = await mallory.signTypedData(
-    { name: "Seaport", version: "1.6", chainId: CHAIN_ID, verifyingContract: SEAPORT },
-    (await import("../src/offer.mjs")).EIP712_TYPES, signed.parameters);
-  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "bad_signature");
-});
-
-test("editing the price after signing is refused", async () => {
-  const signed = await anOffer();
-  const note = toNote(signed);
-  const body = JSON.parse(note.content);
-  body.order.consideration[0].startAmount = "1";
-  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "bad_signature");
-});
-
-test("an order with a zone or a conduit is refused: it could hook the fill", async () => {
-  const signed = await anOffer();
-  for (const [field, value, reason] of [
-    ["zone", "0x000000000000000000000000000000000000dEaD", "has_zone"],
-    ["conduitKey", "0x" + "11".repeat(32), "has_conduit"],
+test("the summary cannot lie about the terms", async () => {
+  // The attack: advertise a bargain in the part readers filter on, settle the real
+  // order. The id stays correct, so only the summary check can catch this.
+  for (const lie of [
+    (b) => { b.want.amount = "1"; },
+    (b) => { b.give.amount = "999000000"; },
+    (b) => { b.give.asset = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"; },
   ]) {
-    const note = toNote(signed);
+    const note = toNote(await anIntent());
     const body = JSON.parse(note.content);
-    body.order[field] = value;
-    assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, reason);
+    lie(body);
+    assert.equal(read({ ...note, content: JSON.stringify(body) }).reason,
+      "summary_disagrees_with_terms", JSON.stringify(body.give) + JSON.stringify(body.want));
   }
 });
 
-test("multi-item orders are refused in v1", async () => {
-  const signed = await anOffer();
-  const note = toNote(signed);
+test("the id cannot lie about the terms", async () => {
+  const note = toNote(await anIntent());
   const body = JSON.parse(note.content);
-  body.order.offer = [body.order.offer[0], body.order.offer[0]];
-  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "unsupported_shape");
+  body.id = "0x" + "ff".repeat(32);
+  assert.equal(read({ ...note, content: JSON.stringify(body) }).reason, "id_disagrees_with_terms");
+});
+
+test("hostile input is refused with a reason, never thrown", async () => {
+  for (const [note, reason] of [
+    [null, "wrong_kind"],
+    [{ kind: OFFER_KIND, content: "nope" }, "unparseable"],
+    [{ kind: OFFER_KIND, content: JSON.stringify({ v: "nuri-p2p/1" }) }, "unknown_version"],
+    [{ kind: OFFER_KIND, content: JSON.stringify({ v: SCHEMA_VERSION }) }, "malformed_intent"],
+  ]) assert.equal(read(note).reason, reason);
+});
+
+test("an expired intent is refused before its method is consulted", async () => {
+  const note = toNote(await anIntent({ expirySeconds: 60 }));
+  assert.equal(fromNote(note, { now: NOW + 61 }).reason, "expired");
+});
+
+// --- the second method: this is what makes it a marketplace, not one product ---
+
+test("a Bitcoin method registers without the board knowing anything about Bitcoin", () => {
+  assert.deepEqual(knownMethods().sort(), ["htlc-v1", "seaport-1.6"]);
+  assert.equal(htlc.id, "htlc-v1");
+});
+
+test("cross-chain intents are readable by a client that cannot execute them", () => {
+  const i = {
+    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
+    give: { chain: CHAINS.bitcoin, asset: "btc", amount: "100000" },
+    want: { chain: CHAINS.base, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "100000000" },
+    expiry: NOW + 86400,
+    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 86400, takerRefundAt: NOW + 43200 },
+    proof: "0x00",
+  };
+  const r = read({ kind: OFFER_KIND, content: JSON.stringify(i) });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "no_adapter_yet");
+  assert.equal(r.readable, true, "readable, but honestly not executable yet");
+});
+
+test("timelock ordering is enforced: the taker must be able to refund first", () => {
+  assert.ok(timelocksAreSafe({ makerRefundAt: 100000, takerRefundAt: 50000 }));
+  assert.equal(timelocksAreSafe({ makerRefundAt: 50000, takerRefundAt: 100000 }), false);
+  // Equal deadlines are a race, not a swap.
+  assert.equal(timelocksAreSafe({ makerRefundAt: 50000, takerRefundAt: 50000 }), false);
+  // Too small a gap loses money on a congested chain.
+  assert.equal(timelocksAreSafe({ makerRefundAt: 51000, takerRefundAt: 50000 }), false);
+});
+
+test("an HTLC intent with dangerous timelocks is refused outright", () => {
+  const i = {
+    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
+    give: { chain: CHAINS.bitcoin, asset: "btc", amount: "1" },
+    want: { chain: CHAINS.base, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "1" },
+    expiry: NOW + 86400,
+    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 3600, takerRefundAt: NOW + 86400 },
+    proof: "0x00",
+  };
+  assert.equal(read({ kind: OFFER_KIND, content: JSON.stringify(i) }).reason, "unsafe_timelocks");
+});
+
+test("a same-chain intent is pushed to the atomic method, not HTLC", () => {
+  const i = {
+    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
+    give: { chain: CHAINS.base, asset: "0x1", amount: "1" },
+    want: { chain: CHAINS.base, asset: "0x2", amount: "1" },
+    expiry: NOW + 86400,
+    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 86400, takerRefundAt: NOW + 43200 },
+    proof: "0x00",
+  };
+  assert.equal(read({ kind: OFFER_KIND, content: JSON.stringify(i) }).reason, "same_chain_use_atomic_method");
 });

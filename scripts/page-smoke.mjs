@@ -76,12 +76,24 @@ const msg = await evaluate(`document.getElementById('takeMsg').textContent`);
 ok("garbage offer is refused in plain words", /not a valid offer/i.test(msg), msg);
 ok("accept stays disabled after a bad offer", await evaluate(`document.getElementById('take').disabled`));
 
-const wrongChain = JSON.stringify({ v: "nuri-p2p/1", chainId: 1, seaport: "0x0000000000000068F116a894984e2DB1123eB395", order: {}, signature: "0x" });
+const wrongChain = JSON.stringify({ v: "nuri-p2p/2", settle: "seaport-1.6",
+  give: { chain: "eip155:1", asset: "0x0", amount: "1" }, want: { chain: "eip155:1", asset: "0x0", amount: "1" },
+  terms: { contract: "0x0000000000000068F116a894984e2DB1123eB395", order: {} }, proof: "0x" });
 await evaluate(`document.getElementById('inOffer').value = ${JSON.stringify(wrongChain)}`);
 await evaluate(`document.getElementById('chk').click()`);
 await sleep(600);
 const msg2 = await evaluate(`document.getElementById('takeMsg').textContent`);
 ok("an offer for another network is refused", /different network/i.test(msg2), msg2);
+
+const otherMethod = JSON.stringify({ v: "nuri-p2p/2", settle: "htlc-v1",
+  give: { chain: "bip122:000000000019d6689c085ae165831e93", asset: "btc", amount: "1000" },
+  want: { chain: "eip155:8453", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "1000" },
+  terms: {}, proof: "0x" });
+await evaluate(`document.getElementById('inOffer').value = ${JSON.stringify(otherMethod)}`);
+await evaluate(`document.getElementById('chk').click()`);
+await sleep(600);
+const msg3 = await evaluate(`document.getElementById('takeMsg').textContent`);
+ok("a settlement method this page cannot do is refused, not attempted", /cannot do yet/i.test(msg3), msg3);
 
 ws.close(); chrome.kill(); server.close();
 const failed = checks.filter((c) => !c.pass);

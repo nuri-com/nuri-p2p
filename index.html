@@ -120,7 +120,12 @@ const ERC20 = ["function balanceOf(address) view returns (uint256)",
   "function approve(address,uint256) returns (bool)"];
 const RPCS = ["https://base-rpc.publicnode.com","https://base.drpc.org","https://mainnet.base.org"];
 const RELAYS = ["wss://relay.damus.io","wss://nos.lol","wss://relay.primal.net"];
-const KIND = 38383, V = "nuri-p2p/1";
+const KIND = 38383, V = "nuri-p2p/2";
+const BASE = "eip155:8453";
+// This page can execute exactly one settlement method. Intents using another
+// method are listed but never actioned here — that is how new rails arrive
+// without this file changing.
+const CAN_SETTLE = "seaport-1.6";
 
 const $ = (id) => document.getElementById(id);
 const say = (el, text, kind="info", why=[]) => {
@@ -160,9 +165,10 @@ function readOffer(text) {
   let note; try { note = JSON.parse(text); } catch { return { ok:false, why:["That is not a valid offer."] }; }
   const body = note.content ? (()=>{ try { return JSON.parse(note.content); } catch { return null; } })() : note;
   if (!body || body.v !== V) return { ok:false, why:["Unknown offer format."] };
-  if (body.chainId !== CHAIN_ID) return { ok:false, why:["This offer is for a different network."] };
-  if (body.seaport?.toLowerCase() !== SEAPORT.toLowerCase()) return { ok:false, why:["This offer uses a settlement contract we do not know."] };
-  const o = body.order;
+  if (body.settle !== CAN_SETTLE) return { ok:false, why:["This offer settles a way this page cannot do yet."] };
+  if (body.give?.chain !== BASE || body.want?.chain !== BASE) return { ok:false, why:["This offer is for a different network."] };
+  if (body.terms?.contract?.toLowerCase() !== SEAPORT.toLowerCase()) return { ok:false, why:["This offer uses a settlement contract we do not know."] };
+  const o = body.terms.order;
   if (o.offer?.length !== 1 || o.consideration?.length !== 1) return { ok:false, why:["This offer has an unsupported shape."] };
   if (o.zone !== ZERO || o.conduitKey !== Z32) return { ok:false, why:["This offer could interfere with the swap."] };
   let signer; try { signer = ethers.verifyTypedData(DOMAIN, TYPES, o, body.signature); } catch { return { ok:false, why:["The signature is not readable."] }; }
@@ -228,10 +234,16 @@ $("mk").onclick = async () => {
     say(el, "Now sign the offer. This costs nothing and moves nothing.");
     const signature = await signer.signTypedData(DOMAIN, TYPES, order);
     madeOffer = { parameters: order, signature };
+    const intent = { v:V, settle:CAN_SETTLE, by:me, id:hashOf(order),
+      give: { chain:BASE, asset:order.offer[0].token, amount:order.offer[0].startAmount },
+      want: { chain:BASE, asset:order.consideration[0].token, amount:order.consideration[0].startAmount },
+      expiry: Number(order.endTime), terms: { contract:SEAPORT, order }, proof: signature };
     const note = { kind: KIND, created_at: Number(order.startTime),
-      content: JSON.stringify({ v:V, chainId:CHAIN_ID, seaport:SEAPORT, order, signature }),
-      tags: [["d", hashOf(order)], ["k","swap"], ["expiration", String(order.endTime)],
-             ["chain", String(CHAIN_ID)], ["v", V]] };
+      content: JSON.stringify(intent),
+      tags: [["d", hashOf(order)], ["k","intent"], ["settle", CAN_SETTLE],
+             ["expiration", String(order.endTime)],
+             ["gives", BASE, intent.give.asset, intent.give.amount],
+             ["wants", BASE, intent.want.asset, intent.want.amount], ["v", V]] };
     $("mkOut").value = JSON.stringify(note, null, 2);
     $("mkOut").style.display = "block";
     $("cp").disabled = false;

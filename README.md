@@ -1,9 +1,21 @@
 # nuri-p2p
 
-Two people swap tokens on Base. Nobody in the middle.
+A board where peers post intents and other peers fill them. Nobody in the middle.
 
-One of them signs an offer. Their money stays in their own wallet. The other one executes it, and
-both sides move in a single transaction — or nothing happens at all.
+An intent says what you give and what you want. `settle` names how it settles. Anyone who
+understands that method can fill it — no allowlist, no registration, no operator. Today one method
+works (two ERC-20 legs on Base, both moved in a single transaction). Bitcoin is the next one, and
+adding it does not change the board, the page, or anybody else's client.
+
+## Why not just use CoW
+
+CoW has the better price and the better auction. But its settlement contract is `onlySolver`: a
+peer cannot fill a peer's order, and joining the solver set means a pool plus onboarding. NEAR
+Intents needs approval and KYC/KYB. Those are venues you send an order *to*.
+
+This is the other thing: peers meeting directly, any taker, no permission. If you want the best
+price on an EVM pair, use CoW. If you want two people — or two agents — to trade without asking
+anyone, use this.
 
 ## What this is not
 

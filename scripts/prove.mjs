@@ -8,6 +8,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { buildOrder, signOrder, orderHash } from "../src/offer.mjs";
 import { connect, check, simulate, fill, approve, ERC20_ABI } from "../src/fill.mjs";
 import { toNote, fromNote } from "../src/board.mjs";
+import seaport from "../src/settle-seaport.mjs";
 import { SEAPORT, TOKENS, CHAIN_ID } from "../src/constants.mjs";
 
 const EXECUTE = process.argv.includes("--execute");
@@ -57,8 +58,10 @@ const hash = orderHash(order);
 console.log(`\norder hash ${hash}`);
 
 // Round trip through the board format, exactly as another peer would receive it.
-const parsed = fromNote({ ...toNote(signed), id: "x", pubkey: "x", sig: "x" });
-if (!parsed.ok) { console.error("the offer does not survive the board format:", parsed.reason); process.exit(1); }
+const intent = seaport.fromSigned(signed);
+const parsed = fromNote({ ...toNote(intent), id: "x", pubkey: "x", sig: "x" });
+if (!parsed.ok) { console.error("the intent does not survive the board format:", parsed.reason); process.exit(1); }
+parsed.signed = parsed.settled.signed;
 
 const gate = await check(parsed.signed, { provider: p, taker: taker.address });
 console.log("check:", gate.fillable ? "fillable" : `refused — ${gate.problems.join("; ")}`);

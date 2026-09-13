@@ -1,110 +1,102 @@
-// The board. Offers travel over public Nostr relays that other people run.
-// We operate none of them. An offer also survives as a plain file: see toFile/fromFile.
-import { ethers } from "ethers";
-import { OFFER_KIND, DEFAULT_RELAYS, CHAIN_ID, SEAPORT } from "./constants.mjs";
-import { orderHash, signatureMatchesOfferer } from "./offer.mjs";
+// The board: intents travel over public Nostr relays that other people run,
+// or as plain files. We operate none of it.
+//
+// An intent is settlement-agnostic. The envelope says WHAT (give this, want that)
+// in a form anyone can filter on; `settle` names HOW, and the method owns the rest.
+// A reader that does not know a method skips the intent instead of guessing.
+import { OFFER_KIND, DEFAULT_RELAYS } from "./constants.mjs";
+import { get as method, known } from "./settle.mjs";
+import "./settle-seaport.mjs"; // registers seaport-1.6
 
-export const SCHEMA_VERSION = "nuri-p2p/1";
+export const SCHEMA_VERSION = "nuri-p2p/2";
 
-// A note carries the complete signed order, so a reader needs nothing else —
-// not us, not an index, not the relay it came from.
-export function toNote(signed, { chainId = CHAIN_ID } = {}) {
-  const p = signed.parameters;
-  const content = JSON.stringify({
-    v: SCHEMA_VERSION,
-    chainId,
-    seaport: SEAPORT,
-    order: p,
-    signature: signed.signature,
-  });
+export function toNote(intent) {
+  const content = JSON.stringify({ v: SCHEMA_VERSION, ...intent });
   return {
     kind: OFFER_KIND,
-    created_at: Number(p.startTime),
+    created_at: Math.floor(Date.now() / 1000),
     content,
     tags: [
-      ["d", orderHash(p)],                       // replaceable: one event per order
-      ["k", "swap"],
-      ["expiration", String(p.endTime)],         // NIP-40: relays may drop it after this
-      ["chain", String(chainId)],
-      ["gives", p.offer[0].token, p.offer[0].startAmount],
-      ["wants", p.consideration[0].token, p.consideration[0].startAmount],
+      ["d", intent.id],
+      ["k", "intent"],
+      ["settle", intent.settle],
+      ["expiration", String(intent.expiry)],   // NIP-40: relays may drop it themselves
+      ["gives", intent.give.chain, intent.give.asset, intent.give.amount],
+      ["wants", intent.want.chain, intent.want.asset, intent.want.amount],
       ["v", SCHEMA_VERSION],
     ],
   };
 }
 
-// Parse a note back into a signed order. Returns { ok, reason, signed }.
-// Never throws on hostile input: a bad note is a skipped note, not a crash.
-export function fromNote(note, { chainId = CHAIN_ID, now = Math.floor(Date.now() / 1000) } = {}) {
+// Returns { ok, reason } or { ok:true, intent, settled }. Never throws on hostile input.
+export function fromNote(note, { now = Math.floor(Date.now() / 1000) } = {}) {
   const bad = (reason) => ({ ok: false, reason });
   if (!note || note.kind !== OFFER_KIND) return bad("wrong_kind");
 
   let body;
   try { body = JSON.parse(note.content); } catch { return bad("unparseable"); }
   if (body?.v !== SCHEMA_VERSION) return bad("unknown_version");
-  if (body.chainId !== chainId) return bad("wrong_chain");
-  if (!body.seaport || body.seaport.toLowerCase() !== SEAPORT.toLowerCase()) return bad("unknown_settlement_contract");
+  for (const f of ["settle", "give", "want", "expiry", "terms", "proof", "id"]) {
+    if (body[f] === undefined) return bad("malformed_intent");
+  }
+  for (const leg of [body.give, body.want]) {
+    if (!leg?.chain || !leg?.asset || !leg?.amount) return bad("malformed_leg");
+  }
+  if (Number(body.expiry) <= now) return bad("expired");
 
-  const order = body.order;
-  if (!order?.offer?.length || !order?.consideration?.length) return bad("malformed_order");
-  if (order.offer.length !== 1 || order.consideration.length !== 1) return bad("unsupported_shape");
-  if (order.zone !== "0x0000000000000000000000000000000000000000") return bad("has_zone");
-  if (order.conduitKey !== "0x" + "00".repeat(32)) return bad("has_conduit");
-  if (Number(order.endTime) <= now) return bad("expired");
+  const m = method(body.settle);
+  if (!m) return bad("unknown_settlement_method");
 
-  const signed = { parameters: order, signature: body.signature };
-  if (!signatureMatchesOfferer(signed, chainId, body.seaport)) return bad("bad_signature");
+  const parsed = m.parse(body, { now });
+  if (!parsed.ok) return parsed;
+  if (parsed.id !== body.id) return bad("id_disagrees_with_terms");
 
-  return { ok: true, signed, hash: orderHash(order) };
+  return { ok: true, intent: body, settled: parsed, method: m };
 }
 
-// Offers as files. This is the escape hatch: relays can censor, a file cannot.
-export const toFile = (signed) => JSON.stringify(toNote(signed), null, 2);
+// Intents as files. Relays can censor; a file cannot.
+export const toFile = (intent) => JSON.stringify(toNote(intent), null, 2);
 export const fromFile = (text, opts) => {
   try { return fromNote(JSON.parse(text), opts); }
   catch { return { ok: false, reason: "unparseable" }; }
 };
 
+export { known as knownMethods };
+
 // --- relay I/O -------------------------------------------------------------
-// Loaded lazily so that everything above works with no network and no nostr-tools.
+// Imported lazily, so everything above works offline and without nostr-tools.
 
 async function tools() {
-  const { SimplePool, finalizeEvent, generateSecretKey, getPublicKey } = await import("nostr-tools/pure")
-    .catch(async () => await import("nostr-tools"));
-  return { SimplePool, finalizeEvent, generateSecretKey, getPublicKey };
+  return import("nostr-tools/pure").catch(() => import("nostr-tools"));
 }
 
-// Publishing identity is throwaway and unrelated to the wallet: the Nostr key
-// says who posted, the EIP-712 signature says who may spend. Never conflate them.
-export async function publish(signed, { relays = DEFAULT_RELAYS, secretKey } = {}) {
+// The Nostr key says who posted. The intent's own proof says who may spend.
+// Never conflate them: a throwaway posting identity is fine and intended.
+export async function publish(intent, { relays = DEFAULT_RELAYS, secretKey } = {}) {
   const { SimplePool, finalizeEvent, generateSecretKey } = await tools();
-  const sk = secretKey ?? generateSecretKey();
-  const event = finalizeEvent(toNote(signed), sk);
+  const event = finalizeEvent(toNote(intent), secretKey ?? generateSecretKey());
   const pool = new SimplePool();
   try {
     const results = await Promise.allSettled(pool.publish(relays, event));
-    const accepted = results.filter((r) => r.status === "fulfilled").length;
-    return { event, accepted, attempted: relays.length };
-  } finally {
-    pool.close(relays);
-  }
+    return { event, accepted: results.filter((r) => r.status === "fulfilled").length, attempted: relays.length };
+  } finally { pool.close(relays); }
 }
 
-export async function fetchOffers({ relays = DEFAULT_RELAYS, limit = 50, chainId = CHAIN_ID, timeoutMs = 8000 } = {}) {
+// Ask for intents. `settle` filters to methods you can actually act on.
+export async function fetchIntents({ relays = DEFAULT_RELAYS, limit = 50, settle, timeoutMs = 8000 } = {}) {
   const { SimplePool } = await tools();
   const pool = new SimplePool();
   try {
-    const events = await pool.querySync(relays, { kinds: [OFFER_KIND], limit }, { maxWait: timeoutMs });
-    const seen = new Set();
-    const offers = [];
+    const filter = { kinds: [OFFER_KIND], limit };
+    if (settle) filter["#settle"] = Array.isArray(settle) ? settle : [settle];
+    const events = await pool.querySync(relays, filter, { maxWait: timeoutMs });
+    const seen = new Set(), out = [];
     for (const e of events) {
-      const parsed = fromNote(e, { chainId });
-      if (!parsed.ok || seen.has(parsed.hash)) continue;
-      seen.add(parsed.hash);
-      offers.push({ ...parsed, event: e });
+      const r = fromNote(e);
+      if (!r.ok || seen.has(r.intent.id)) continue;
+      seen.add(r.intent.id);
+      out.push({ ...r, event: e });
     }
-    return offers;
-  } finally {
-    pool.close(relays);
-  }
+    return out;
+  } finally { pool.close(relays); }
 }
