@@ -1,0 +1,1 @@
+{"version":1,"failures":[{"contract":"test/contracts/ERC20Swap.t.sol:ERC20SwapTest","test":"test_claim_pays_claimer_not_locker"},{"contract":"test/contracts/ERC20Swap.t.sol:ERC20SwapTest","test":"test_claim_twice_reverts"},{"contract":"test/contracts/ERC20Swap.t.sol:ERC20SwapTest","test":"test_refund_after_claim_reverts"}]}

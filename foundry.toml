@@ -1,0 +1,7 @@
+[profile.default]
+src = "contracts"
+out = "contracts/out"
+libs = ["lib"]
+test = "test/contracts"
+solc_version = "0.8.28"
+remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]

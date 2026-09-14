@@ -4,7 +4,8 @@
 
 ```sh
 npm run check      # every file parses
-npm test           # 42 tests, 8 of them read Base for real
+npm test           # 43 tests, 8 of them read Base for real
+npm run test:contracts  # 9 forge tests: the EVM HTLC half behaves
 npm run test:page  # boots index.html in headless Chrome, offline
 npm run test:live  # the shipped page against the real public relays
 ```
