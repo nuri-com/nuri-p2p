@@ -52,6 +52,23 @@ flowchart TD
     Q -->|Our service is down| R5[There is no our service.<br/>See above.]
 ```
 
+## Try it right now
+
+There is a real, fillable offer on the public board as you read this (it expires 24h after
+posting — an empty board is normal, offers only exist while somebody makes one):
+
+- Maker `0x42EA1bd1DdAfd2911095BEe9284A400BE9889318` gives **0.0002 USDC**, wants **0.00018 EURC**
+- Intent `0x202c157aeebe1d92fe63f519196613feb342c6895e7dd7f791933e8d0c5646f0`
+- Find it: open `index.html`, click “Look for offers” — or ask any relay for kind `38383` with tag `m = seaport-1.6`
+
+It is dust on purpose. It proves the loop: sign → publish → discover → check → fill.
+
+## The page
+
+Yes — `index.html` is the frontend, one file, no build, no server. Open it from `file://` in any
+browser with a wallet. It makes offers, checks other people's offers in plain sentences, and
+executes them. It talks to Base and to public relays, never to a server of ours.
+
 ## Why not just use CoW
 
 CoW has the better price and the better auction. But its settlement contract is `onlySolver`: a
