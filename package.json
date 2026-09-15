@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Peer-to-peer token swaps on Base. No contract of ours, no server, no operator.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "node --test --test-concurrency=1 'test/**/*.test.mjs'",
     "test:contracts": "forge test",
@@ -15,6 +17,9 @@
     "prove:stale": "node scripts/prove-stale.mjs"
   },
   "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@scure/btc-signer": "^2.4.1",
     "ethers": "^6.13.4",
     "nostr-tools": "^2.10.4"
   },

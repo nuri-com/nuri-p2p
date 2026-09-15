@@ -21,6 +21,7 @@ export const ERC20_ABI = [
 ];
 
 export async function connect(urls = process.env.NURI_P2P_RPC ? [process.env.NURI_P2P_RPC] : DEFAULT_RPCS) {
+  const healthy = [];
   for (const url of urls) {
     try {
       const p = new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true });
@@ -35,10 +36,60 @@ export async function connect(urls = process.env.NURI_P2P_RPC ? [process.env.NUR
         p.getCode(SEAPORT),
         sea.getCounter("0x0000000000000000000000000000000000000001"),
       ]);
-      if (Number(chain.chainId) === CHAIN_ID && block > 0 && code.length > 2 && counter === 0n) return p;
+      if (Number(chain.chainId) === CHAIN_ID && block > 0 && code.length > 2 && counter === 0n) {
+        healthy.push(p);
+        break;
+      }
     } catch { /* this endpoint is degraded; the next one gets its chance */ }
   }
-  throw new Error("no healthy Base RPC reachable");
+  if (healthy.length === 0) throw new Error("no healthy Base RPC reachable");
+
+  // Passing the health probe does not buy immunity. Under load, free endpoints
+  // return a batch with responses *missing* — ethers surfaces that later as
+  // BAD_DATA "missing response for request", which reads exactly like a failed
+  // assertion three frames away from the real cause. Measured on 1rpc.io: 3 of 6
+  // identical batch rounds came back short.
+  //
+  // So: after every batch, check that each request id got an answer, and re-ask
+  // for the missing ones — first on this endpoint one at a time, then on the
+  // spares. Somebody else's rate limit is not a test result.
+  const primary = healthy[0];
+  const spares = urls
+    .filter((u) => u !== primary._getConnection().url)
+    .map((u) => new ethers.JsonRpcProvider(u, CHAIN_ID, { staticNetwork: true }));
+
+  const send = primary._send.bind(primary);
+
+  // Retry one request. The primary uses the *unwrapped* send — calling the wrapper
+  // from inside itself would recurse forever.
+  const ask = async (sendOne, one) => {
+    const r = await sendOne(one);
+    return (Array.isArray(r) ? r : [r]).find((x) => x && x.id === one.id);
+  };
+  const retries = [send, ...spares.map((s) => s._send.bind(s))];
+
+  primary._send = async (payload) => {
+    const asked = Array.isArray(payload) ? payload : [payload];
+    let got = [];
+    try {
+      const r = await send(payload);
+      got = Array.isArray(r) ? r : [r];
+    } catch { /* whole batch died; every id counts as missing */ }
+
+    const answered = new Set(got.map((x) => x && x.id));
+    for (const one of asked.filter((x) => !answered.has(x.id))) {
+      let answer;
+      for (const sendOne of retries) {
+        try {
+          answer = await ask(sendOne, one);
+          if (answer) break;
+        } catch { /* next endpoint */ }
+      }
+      got.push(answer ?? { id: one.id, jsonrpc: "2.0", error: { code: -32603, message: "no endpoint answered" } });
+    }
+    return got;
+  };
+  return primary;
 }
 
 export const seaport = (runner) => new ethers.Contract(SEAPORT, SEAPORT_ABI, runner);
