@@ -52,7 +52,12 @@ const terms = {
   hash: secret.hash,
   claimPubkey: pubkey(claimKey),
   refundPubkey: pubkey(refundKey),
-  timeoutBlock: tip + 3, // short: this test waits for it
+  // Far enough ahead that funding cannot confirm past it. Signet blocks arrive
+  // 10-40 minutes apart, and a previous run had the chain overtake a 3-block
+  // timeout while waiting — which silently turned the "refund is too early"
+  // check into a refund that was simply on time. A test whose premise can expire
+  // is a test that proves nothing.
+  timeoutBlock: tip + 8,
 };
 const lock = htlcAddress(terms, SIGNET);
 say("\nhtlc address:", lock.address);
@@ -159,6 +164,21 @@ const locked = await utxos(SIGNET, lock.address);
 if (locked.length !== 1 || locked[0].value !== LOCK_AMOUNT) fail(`expected ${LOCK_AMOUNT} sats locked, saw ${JSON.stringify(locked.map(String))}`);
 say("the htlc holds", locked[0].value, "sats");
 
+// The timeout is checked HERE, where earliness is guaranteed: this lock's deadline
+// is still blocks away. Assert that premise out loud before believing the result.
+const tipNow = await tipHeight(SIGNET);
+if (tipNow >= terms.timeoutBlock) {
+  fail(`cannot test the timeout: the chain is at ${tipNow}, the deadline was ${terms.timeoutBlock}`);
+}
+say(`chain is at ${tipNow}, the deadline is ${terms.timeoutBlock} — a refund now is genuinely early`);
+let refusedEarly = false;
+try {
+  const early = refundTx({ chain: SIGNET, script: lock.script, utxos: locked, to: walletAddr, feeSats: FEE, privateKey: refundKey });
+  await broadcast(SIGNET, hex(early.extract()));
+} catch { refusedEarly = true; }
+if (!refusedEarly) fail("a refund before the timeout was accepted — the timeout means nothing");
+say("a refund before the timeout is rejected");
+
 // The wrong secret must not be spendable. Build it and let the network judge.
 const wrongSecret = newSecret();
 let refusedWrong = false;
@@ -195,15 +215,6 @@ say("funded:", fund2Id);
 await waitFor(fund2Id, "second funding");
 const locked2 = await utxos(SIGNET, lock2.address);
 say("the htlc holds", locked2[0].value, "sats");
-
-// Early refund must fail. The whole point of the timeout is that it holds.
-let refusedEarly = false;
-try {
-  const early = refundTx({ chain: SIGNET, script: lock2.script, utxos: locked2, to: walletAddr, feeSats: FEE, privateKey: refundKey });
-  await broadcast(SIGNET, hex(early.extract()));
-} catch { refusedEarly = true; }
-if (!refusedEarly) fail("a refund before the timeout was accepted — the timeout means nothing");
-say("a refund before the timeout is rejected");
 
 say("waiting for block", terms2.timeoutBlock, "...");
 say("tip is", await waitForHeight(terms2.timeoutBlock));

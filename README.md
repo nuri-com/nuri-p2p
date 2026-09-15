@@ -63,6 +63,30 @@ posting — an empty board is normal, offers only exist while somebody makes one
 
 It is dust on purpose. It proves the loop: sign → publish → discover → check → fill.
 
+## Bitcoin
+
+The Bitcoin half is proven on signet — lock, claim with the secret, and the refund after the
+timeout, all as real transactions:
+
+| what | transaction | block |
+|---|---|---|
+| lock 20000 sats | `0147e2e5b81123e3072844daa38e8d4772861ce5d4f2e36a2245347b6215caf5` | 322193 |
+| claim with the secret | `d2503ad9445bc6a1133608e162fc817edad36dfb36c313e761b3499ad999c62f` | 322194 |
+| lock again | `e7e2c9aa865405567081c49d9caf2a41148882522a2b32f7af8ae004181fc88f` | 322195 |
+| refund after timeout | `83e1836c4a028b853c07cd26dbc5b575dba44184887f9e6d45a592968df6f7da` | 322197 |
+
+Refused along the way, by the network and not by us: a refund before the timeout, and a claim
+with the wrong secret.
+
+The claim published the secret on chain — `b7d29d27f54a591308a08378b8736c54bf8213087a70462d36bada920be1c182`,
+sitting in the witness for anyone to read. That is the mechanism: the same SHA256 hash locks
+`contracts/ERC20Swap.sol` on Base, so revealing the secret to take the Bitcoin also opens the
+EVM side. Neither peer can take both.
+
+Still missing: the two halves driven as one swap (`scripts/prove-swap.mjs`), and mainnet.
+Reproduce the Bitcoin half with `node scripts/prove-btc.mjs` — it costs nothing and broadcasts
+nothing until `--execute`.
+
 ## The page
 
 Yes — `index.html` is the frontend, one file, no build, no server. Open it from `file://` in any
