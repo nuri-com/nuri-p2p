@@ -43,11 +43,20 @@ that claims to be ready when it is not is worse than one that says so. Its timel
 already enforced, because getting that wrong loses money:
 
 ```
-takerRefundAt + 2h ≤ makerRefundAt
+(takerRefundAt - wantChainTip) × wantBlockSeconds + 4200s
+    ≤ (makerRefundAt - giveChainTip) × giveBlockSeconds
 ```
 
-The taker locks second and must be able to refund **before** the maker can. Equal deadlines are a
-race, not a swap.
+Deadlines are block heights on their own chains, so both sides are converted to wall clock before
+they are compared — a Bitcoin height and a Base height are not the same kind of number. The maker
+holds the secret, so the maker locks first and claims first; the taker is last and therefore needs
+the **earlier** deadline. Reversed, the maker could refund their own lock and still claim the
+taker's, collecting both sides. The 4200s gap covers two Bitcoin blocks plus an hour: enough to
+notice the reveal, build a claim, and get it mined during a fee spike.
+
+A reader without current chain heights refuses the intent (`need_chain_heights`) rather than
+guessing, and the gap is a constant — an intent cannot carry terms that switch off the check that
+protects whoever fills it.
 
 ## Adding a method
 

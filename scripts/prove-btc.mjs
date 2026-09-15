@@ -13,6 +13,7 @@
 //   node scripts/prove-btc.mjs              # dry run, builds and checks, broadcasts nothing
 //   SIGNET_KEY=<hex> node scripts/prove-btc.mjs --execute
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as btc from "@scure/btc-signer";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
@@ -87,6 +88,19 @@ if (spendable.length === 0) fail(`no confirmed coins yet${pending > 0n ? `; ${pe
 const LOCK_AMOUNT = 20000n;
 if (have < LOCK_AMOUNT * 2n + FEE * 4n) fail(`not enough signet coins: have ${have}, need ~${LOCK_AMOUNT * 2n + FEE * 4n}`);
 
+// Write down what is needed to get the coins back, BEFORE the coins move.
+// Learned the hard way: a run died between funding and claiming, and the secret
+// lived only in memory. The address is derived from the secret's hash, so
+// without it the script cannot even be rebuilt — the coins are unreachable by
+// either path, forever. On signet that cost nothing. On mainnet it is a loss.
+const remember = (note) => {
+  const dir = new URL("../proofs/", import.meta.url);
+  mkdirSync(dir, { recursive: true });
+  const file = new URL(`htlc-${note.address.slice(-12)}.json`, dir);
+  writeFileSync(file, JSON.stringify(note, null, 2));
+  say("wrote recovery note:", file.pathname.split("/").slice(-2).join("/"));
+};
+
 const fundHtlc = (from, amount, to) => {
   const total = from.reduce((s, u) => s + u.value, 0n);
   const tx = new btc.Transaction({ allowUnknownOutputs: false });
@@ -101,16 +115,40 @@ const fundHtlc = (from, amount, to) => {
   return tx;
 };
 
+// Signet's block production is irregular — it is a test network mined by a
+// signer, not by a race. We measured 20+ minute gaps. Waiting "ten minutes"
+// turns a healthy chain into a failed proof, so the patience here is generous
+// and says out loud what it is waiting for.
+const PATIENCE_MS = 90 * 60 * 1000;
+
 const waitFor = async (txid, what) => {
-  for (let i = 0; i < 60; i++) {
+  const until = Date.now() + PATIENCE_MS;
+  let said = 0;
+  while (Date.now() < until) {
     const s = await txStatus(SIGNET, txid).catch(() => null);
     if (s?.confirmed) return s.block_height;
-    await new Promise((r) => setTimeout(r, 10000));
+    const mins = Math.round((Date.now() - (until - PATIENCE_MS)) / 60000);
+    if (mins >= said + 5) { say(`  still waiting for ${what} (${mins} min, tip ${await tipHeight(SIGNET).catch(() => "?")})`); said = mins; }
+    await new Promise((r) => setTimeout(r, 15000));
   }
-  fail(`${what} never confirmed: ${txid}`);
+  fail(`${what} never confirmed in ${PATIENCE_MS / 60000} min: ${txid}`);
+};
+
+const waitForHeight = async (height) => {
+  const until = Date.now() + PATIENCE_MS;
+  let said = 0;
+  while (Date.now() < until) {
+    const tip = await tipHeight(SIGNET).catch(() => 0);
+    if (tip >= height) return tip;
+    const mins = Math.round((Date.now() - (until - PATIENCE_MS)) / 60000);
+    if (mins >= said + 5) { say(`  still waiting for block ${height} (${mins} min, tip ${tip})`); said = mins; }
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+  fail(`signet never reached block ${height} in ${PATIENCE_MS / 60000} min`);
 };
 
 say("\n--- happy path: lock, then claim with the secret ---");
+remember({ chain: SIGNET, address: lock.address, script: lock.script, terms, preimage: secret.preimage, claimKey, refundKey, note: "signet proof, happy path" });
 const fund1 = fundHtlc(spendable, LOCK_AMOUNT, lock.address);
 const fund1Id = await broadcast(SIGNET, hex(fund1.extract()));
 say("funded:", fund1Id);
@@ -150,6 +188,7 @@ const terms2 = { ...terms, hash: newSecret().hash, timeoutBlock: tip2 + 2 };
 const lock2 = htlcAddress(terms2, SIGNET);
 say("htlc address:", lock2.address, "timeout at", terms2.timeoutBlock);
 
+remember({ chain: SIGNET, address: lock2.address, script: lock2.script, terms: terms2, preimage: null, claimKey, refundKey, note: "signet proof, refund path — no secret by design" });
 const fund2 = fundHtlc((await utxos(SIGNET, walletAddr)).filter((u) => u.confirmed), LOCK_AMOUNT, lock2.address);
 const fund2Id = await broadcast(SIGNET, hex(fund2.extract()));
 say("funded:", fund2Id);
@@ -167,13 +206,7 @@ if (!refusedEarly) fail("a refund before the timeout was accepted — the timeou
 say("a refund before the timeout is rejected");
 
 say("waiting for block", terms2.timeoutBlock, "...");
-for (let i = 0; i < 90; i++) {
-  if (await tipHeight(SIGNET) >= terms2.timeoutBlock) break;
-  await new Promise((r) => setTimeout(r, 10000));
-}
-const nowTip = await tipHeight(SIGNET);
-if (nowTip < terms2.timeoutBlock) fail(`signet did not reach block ${terms2.timeoutBlock} in time (tip ${nowTip})`);
-say("tip is", nowTip);
+say("tip is", await waitForHeight(terms2.timeoutBlock));
 
 const refund = refundTx({ chain: SIGNET, script: lock2.script, utxos: locked2, to: walletAddr, feeSats: FEE, privateKey: refundKey });
 const refundId = await broadcast(SIGNET, hex(refund.extract()));

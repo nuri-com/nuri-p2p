@@ -32,7 +32,10 @@ export function toNote(intent) {
 }
 
 // Returns { ok, reason } or { ok:true, intent, settled }. Never throws on hostile input.
-export function fromNote(note, { now = Math.floor(Date.now() / 1000) } = {}) {
+// `heights` carries the current block height of each chain an intent mentions,
+// keyed by CAIP-2 id. Methods whose safety depends on deadlines (HTLC) cannot
+// judge an intent without it and will say so rather than guess.
+export function fromNote(note, { now = Math.floor(Date.now() / 1000), heights } = {}) {
   const bad = (reason) => ({ ok: false, reason });
   if (!note || note.kind !== OFFER_KIND) return bad("wrong_kind");
 
@@ -50,7 +53,7 @@ export function fromNote(note, { now = Math.floor(Date.now() / 1000) } = {}) {
   const m = method(body.settle);
   if (!m) return bad("unknown_settlement_method");
 
-  const parsed = m.parse(body, { now });
+  const parsed = m.parse(body, { now, heights });
   if (!parsed.ok) return parsed;
   if (parsed.id !== body.id) return bad("id_disagrees_with_terms");
 

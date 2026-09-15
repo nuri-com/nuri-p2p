@@ -111,50 +111,100 @@ test("a Bitcoin method registers without the board knowing anything about Bitcoi
   assert.equal(htlc.id, "htlc-v1");
 });
 
+// Deadlines are block heights on their own chains. These are real-ish heights, and
+// the gap between them is the point: Bitcoin moves ~300x slower than Base, so the
+// same number means wildly different amounts of time.
+const BTC_TIP = 967000;
+const BASE_TIP = 51_000_000;
+const HEIGHTS = { [CHAINS.bitcoin]: BTC_TIP, [CHAINS.base]: BASE_TIP, [CHAINS.lightning]: BTC_TIP };
+
+// maker gives BTC (locks first, needs the LATER deadline), taker gives USDC on Base.
+const crossChain = (over = {}) => ({
+  v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
+  give: { chain: CHAINS.bitcoin, asset: "btc", amount: "100000" },
+  want: { chain: CHAINS.base, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "100000000" },
+  expiry: NOW + 86400,
+  terms: {
+    hash: "a".repeat(64),
+    makerRefundAt: BTC_TIP + 48,          // ~8 hours of Bitcoin blocks
+    takerRefundAt: BASE_TIP + 5400,       // ~3 hours of Base blocks
+  },
+  proof: "0x00",
+  ...over,
+});
+
+const readCross = (i) => fromNote({ kind: OFFER_KIND, content: JSON.stringify(i) }, { now: NOW + 1, heights: HEIGHTS });
+
 test("cross-chain intents are readable by a client that cannot execute them", () => {
-  const i = {
-    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
-    give: { chain: CHAINS.bitcoin, asset: "btc", amount: "100000" },
-    want: { chain: CHAINS.base, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "100000000" },
-    expiry: NOW + 86400,
-    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 86400, takerRefundAt: NOW + 43200 },
-    proof: "0x00",
-  };
-  const r = read({ kind: OFFER_KIND, content: JSON.stringify(i) });
+  const r = readCross(crossChain());
   assert.equal(r.ok, false);
   assert.equal(r.reason, "no_adapter_yet");
   assert.equal(r.readable, true, "readable, but honestly not executable yet");
 });
 
-test("timelock ordering is enforced: the taker must be able to refund first", () => {
-  assert.ok(timelocksAreSafe({ makerRefundAt: 100000, takerRefundAt: 50000 }));
-  assert.equal(timelocksAreSafe({ makerRefundAt: 50000, takerRefundAt: 100000 }), false);
-  // Equal deadlines are a race, not a swap.
-  assert.equal(timelocksAreSafe({ makerRefundAt: 50000, takerRefundAt: 50000 }), false);
-  // Too small a gap loses money on a congested chain.
-  assert.equal(timelocksAreSafe({ makerRefundAt: 51000, takerRefundAt: 50000 }), false);
+test("timelock safety is judged in seconds, not in raw block numbers", () => {
+  const safe = (terms) => timelocksAreSafe(terms, {
+    giveChain: CHAINS.bitcoin, wantChain: CHAINS.base, giveHeight: BTC_TIP, wantHeight: BASE_TIP,
+  });
+
+  // Maker on Bitcoin ~8h, taker on Base ~3h: the taker can refund first, with room.
+  assert.ok(safe({ makerRefundAt: BTC_TIP + 48, takerRefundAt: BASE_TIP + 5400 }));
+
+  // Reversed: the maker's deadline lands first. The maker could refund and still
+  // claim the taker's lock, taking both sides.
+  assert.equal(safe({ makerRefundAt: BTC_TIP + 6, takerRefundAt: BASE_TIP + 20000 }), false);
+
+  // The bug this replaced: comparing heights directly. takerRefundAt is a much
+  // SMALLER number than makerRefundAt here, which the old check called safe —
+  // but 1 Bitcoin block is 10 minutes and 1 Base block is 2 seconds, so the
+  // taker's deadline is actually ~11 days away and the maker's is ~10 minutes.
+  assert.equal(safe({ makerRefundAt: BTC_TIP + 1, takerRefundAt: BASE_TIP + 500000 }), false);
+
+  // A deadline already in the past is not a deadline.
+  assert.equal(safe({ makerRefundAt: BTC_TIP - 1, takerRefundAt: BASE_TIP + 5400 }), false);
+  assert.equal(safe({ makerRefundAt: BTC_TIP + 48, takerRefundAt: BASE_TIP - 1 }), false);
+
+  // Equal wall-clock deadlines are a race, not a swap.
+  assert.equal(safe({ makerRefundAt: BTC_TIP + 6, takerRefundAt: BASE_TIP + 1800 }), false);
+
+  // A gap that exists but is too small to notice a reveal and get a claim mined.
+  assert.equal(safe({ makerRefundAt: BTC_TIP + 7, takerRefundAt: BASE_TIP + 1800 }), false);
+});
+
+test("an intent cannot switch off the check that protects whoever fills it", () => {
+  // minGapSeconds used to be a parameter with a default, so terms carrying
+  // minGapSeconds: 0 disabled it. It is a constant now; extra fields are ignored.
+  const withOverride = crossChain();
+  withOverride.terms = { ...withOverride.terms, makerRefundAt: BTC_TIP + 6, takerRefundAt: BASE_TIP + 1790, minGapSeconds: 0 };
+  assert.equal(readCross(withOverride).reason, "unsafe_timelocks");
+});
+
+test("without chain heights an HTLC intent is refused, not guessed at", () => {
+  const r = fromNote({ kind: OFFER_KIND, content: JSON.stringify(crossChain()) }, { now: NOW + 1 });
+  assert.equal(r.reason, "need_chain_heights");
+  // Partial knowledge is still not knowledge.
+  const half = fromNote({ kind: OFFER_KIND, content: JSON.stringify(crossChain()) }, { now: NOW + 1, heights: { [CHAINS.bitcoin]: BTC_TIP } });
+  assert.equal(half.reason, "need_chain_heights");
+});
+
+test("a chain whose block time we do not know is refused", () => {
+  const i = crossChain();
+  i.want = { chain: "eip155:999999", asset: "0x1", amount: "1" };
+  const r = fromNote({ kind: OFFER_KIND, content: JSON.stringify(i) }, {
+    now: NOW + 1, heights: { ...HEIGHTS, "eip155:999999": 1000 },
+  });
+  assert.equal(r.reason, "unknown_chain_timing");
 });
 
 test("an HTLC intent with dangerous timelocks is refused outright", () => {
-  const i = {
-    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
-    give: { chain: CHAINS.bitcoin, asset: "btc", amount: "1" },
-    want: { chain: CHAINS.base, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "1" },
-    expiry: NOW + 86400,
-    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 3600, takerRefundAt: NOW + 86400 },
-    proof: "0x00",
-  };
-  assert.equal(read({ kind: OFFER_KIND, content: JSON.stringify(i) }).reason, "unsafe_timelocks");
+  const i = crossChain();
+  i.terms = { ...i.terms, makerRefundAt: BTC_TIP + 6, takerRefundAt: BASE_TIP + 20000 };
+  assert.equal(readCross(i).reason, "unsafe_timelocks");
 });
 
 test("a same-chain intent is pushed to the atomic method, not HTLC", () => {
-  const i = {
-    v: SCHEMA_VERSION, settle: "htlc-v1", by: alice.address, id: "0x" + "aa".repeat(32),
-    give: { chain: CHAINS.base, asset: "0x1", amount: "1" },
-    want: { chain: CHAINS.base, asset: "0x2", amount: "1" },
-    expiry: NOW + 86400,
-    terms: { hash: "a".repeat(64), makerRefundAt: NOW + 86400, takerRefundAt: NOW + 43200 },
-    proof: "0x00",
-  };
-  assert.equal(read({ kind: OFFER_KIND, content: JSON.stringify(i) }).reason, "same_chain_use_atomic_method");
+  const i = crossChain();
+  i.give = { chain: CHAINS.base, asset: "0x1", amount: "1" };
+  i.want = { chain: CHAINS.base, asset: "0x2", amount: "1" };
+  assert.equal(readCross(i).reason, "same_chain_use_atomic_method");
 });
