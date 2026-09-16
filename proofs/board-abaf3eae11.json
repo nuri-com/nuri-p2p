@@ -1,0 +1,17 @@
+{
+  "what": "an intent published to public relays and read back by a fresh client, with nothing of ours in between",
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.primal.net"
+  ],
+  "intentId": "0xabaf3eae1123fb55c445ac880a794a56c8db24ecfbd85e258843d4a8574fa7b5",
+  "nostrEventId": "61be4eb1dd75ca7976db0771b3bba03c0f269e3961c2f647bac9e791c50e49cf",
+  "acceptedBy": 3,
+  "attempted": 3,
+  "fetchedBack": true,
+  "intactAfterRoundTrip": true,
+  "maker": "0xaB69d6501AF92603216C653FE6B99D9F52480b2f",
+  "settle": "seaport-1.6",
+  "at": "2026-09-13T20:17:41.711Z"
+}

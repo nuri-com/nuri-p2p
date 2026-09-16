@@ -1,0 +1,40 @@
+{
+  "at": "2026-09-15T13:40:00Z",
+  "chain": "bip122:00000008819873e925422c1ff0f99f7c",
+  "network": "signet",
+  "method": "htlc-v1, bitcoin half",
+  "happy_path": {
+    "htlc_address": "tb1q0ajz9n7p7g5vqxqhkzk8ezenpz25ux97jzcn2hqj6qa4lq5f9wgqz8p0wk",
+    "funding": "0147e2e5b81123e3072844daa38e8d4772861ce5d4f2e36a2245347b6215caf5",
+    "funding_block": 322193,
+    "claim": "d2503ad9445bc6a1133608e162fc817edad36dfb36c313e761b3499ad999c62f",
+    "claim_block": 322194,
+    "amount_sats": 20000,
+    "secret_revealed_on_chain": "b7d29d27f54a591308a08378b8736c54bf8213087a70462d36bada920be1c182",
+    "claim_witness_sizes": [
+      72,
+      32,
+      113
+    ],
+    "refused_before_spending": [
+      "a refund before the timeout",
+      "a claim with the wrong secret"
+    ]
+  },
+  "refund_path": {
+    "htlc_address": "tb1qrxhkzyl2whywgrgfenzfr8zn5qew8nx6lhye3zgltyg7sqty090sur6vf9",
+    "funding": "e7e2c9aa865405567081c49d9caf2a41148882522a2b32f7af8ae004181fc88f",
+    "funding_block": 322195,
+    "timeout_block": 322196,
+    "refund": "83e1836c4a028b853c07cd26dbc5b575dba44184887f9e6d45a592968df6f7da",
+    "refund_block": 322197,
+    "refund_locktime": 322196,
+    "refund_witness_sizes": [
+      72,
+      0,
+      113
+    ],
+    "htlc_empty_after": true
+  },
+  "verified_independently": "mempool.space/signet API, after the run: all four transactions confirmed, witness shapes and locktime read back from the chain"
+}

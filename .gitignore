@@ -1,7 +1,6 @@
 node_modules/
 .DS_Store
 .env
-proofs/*.json
+cache/
 contracts/out/
-lib/
 .smoke/
